@@ -22,8 +22,9 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     _token: vscode.CancellationToken,
   ): vscode.PreparedToolInvocation {
     const { command } = options.input;
+    const short = command.length > 80 ? command.slice(0, 77) + '…' : command;
     return {
-      invocationMessage: new vscode.MarkdownString(`Running ${escapeInlineCode(command)}`),
+      invocationMessage: new vscode.MarkdownString(`Running ${escapeInlineCode(short)}`),
       confirmationMessages: {
         title: 'Run in terminal?',
         message: new vscode.MarkdownString(`\`\`\`\`\`bash\n${command}\n\`\`\`\`\``),
