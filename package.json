@@ -1,0 +1,214 @@
+{
+  "name": "terminal-bridge",
+  "displayName": "Terminal Bridge for Copilot Chat",
+  "description": "Terminal tools for Copilot Chat — runs commands directly in WSL/Linux via child_process, no MCP dependency",
+  "version": "0.2.2",
+  "publisher": "terminal-bridge",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "terminal_fg_run",
+        "displayName": "Run Terminal Command",
+        "modelDescription": "Run a command synchronously in the terminal and return its combined stdout+stderr output and exit code. The command runs in WSL/Linux. Use this for any shell command execution.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "The shell command to execute"
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Working directory (absolute Linux/WSL path). Defaults to home directory."
+            }
+          },
+          "required": [
+            "command"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "run"
+      },
+      {
+        "name": "terminal_bg_launch",
+        "displayName": "Launch Background Command",
+        "modelDescription": "Launch a background command via tmux. Returns immediately with a job_id. Use terminal_bg_status and terminal_bg_get_output to poll progress.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "The shell command to execute"
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Working directory (absolute Linux/WSL path)"
+            },
+            "interactive": {
+              "type": "boolean",
+              "description": "If true, start a persistent tmux session for interactive use"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "launch"
+      },
+      {
+        "name": "terminal_bg_status",
+        "displayName": "Background Job Status",
+        "modelDescription": "Check the status of a background job: running, completed, failed, closed, or unknown.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The job ID returned by terminal_bg_launch"
+            }
+          },
+          "required": [
+            "job_id"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "status"
+      },
+      {
+        "name": "terminal_bg_get_output",
+        "displayName": "Get Background Job Output",
+        "modelDescription": "Get the output log of a background job. tail=-1 returns all lines; tail=N returns last N lines.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The job ID returned by terminal_bg_launch"
+            },
+            "tail": {
+              "type": "integer",
+              "description": "Number of lines to return from end. -1 for all. Default 20."
+            }
+          },
+          "required": [
+            "job_id"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "output"
+      },
+      {
+        "name": "terminal_bg_send_cmd",
+        "displayName": "Send Command to Background Job",
+        "modelDescription": "Send a command to an interactive background job's tmux session.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The job ID of an interactive background job"
+            },
+            "command": {
+              "type": "string",
+              "description": "The command to send"
+            }
+          },
+          "required": [
+            "job_id",
+            "command"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "send"
+      },
+      {
+        "name": "terminal_bg_exit",
+        "displayName": "Terminate Background Job",
+        "modelDescription": "Terminate a background job. For interactive jobs, sends 'exit' and waits; for oneshot, kills the tmux session.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "description": "The job ID to terminate"
+            },
+            "timeout": {
+              "type": "integer",
+              "description": "Seconds to wait for graceful exit. Default 60."
+            }
+          },
+          "required": [
+            "job_id"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "stop"
+      },
+      {
+        "name": "terminal_bg_list_jobs",
+        "displayName": "List Background Jobs",
+        "modelDescription": "List background jobs with optional filtering by status or age.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "status_filter": {
+              "type": "string",
+              "description": "Filter by status: running, completed, failed, closed, unknown, or all"
+            },
+            "age_secs": {
+              "type": "integer",
+              "description": "Only show jobs younger than this many seconds. -1 for all."
+            }
+          }
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "list"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^25.8.0",
+    "@types/vscode": "^1.100.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}
