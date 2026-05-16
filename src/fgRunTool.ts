@@ -6,14 +6,6 @@ interface FgRunInput {
   cwd?: string;
 }
 
-function escapeInlineCode(s: string): string {
-  let n = 0, run = 0;
-  for (const ch of s) { run = ch === '`' ? run + 1 : 0; n = Math.max(n, run); }
-  const fence = '`'.repeat(n + 1);
-  const pad = s.startsWith('`') || s.endsWith('`') ? ' ' : '';
-  return `${fence}${pad}${s}${pad}${fence}`;
-}
-
 export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
   constructor(private readonly log: vscode.LogOutputChannel) {}
 
@@ -22,14 +14,18 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     _token: vscode.CancellationToken,
   ): vscode.PreparedToolInvocation {
     const { command } = options.input;
-    const short = command.length > 80 ? command.slice(0, 77) + '…' : command;
     return {
-      invocationMessage: new vscode.MarkdownString(`Running ${escapeInlineCode(short)}`),
+      invocationMessage: new vscode.MarkdownString(`Running \`${command}\``),
       confirmationMessages: {
         title: 'Run in terminal?',
         message: new vscode.MarkdownString(`\`\`\`\`\`bash\n${command}\n\`\`\`\`\``),
       },
-    };
+      // Patched ext host forwards this → main thread renders terminal card
+      toolSpecificData: {
+        commandLine: { original: command },
+        language: 'shellscript',
+      },
+    } as vscode.PreparedToolInvocation;
   }
 
   async invoke(
@@ -39,10 +35,12 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     const { command, cwd } = options.input;
     this.log.info(`fg_run: ${command}${cwd ? ` (cwd: ${cwd})` : ''}`);
 
+    const start = Date.now();
     const script = cwd ? `cd ${sq(cwd)} || exit 1\n${command}` : command;
     const { stdout, exitCode } = await shellExec(script);
+    const duration = Date.now() - start;
 
-    this.log.info(`fg_run complete: exit_code=${exitCode}`);
+    this.log.info(`fg_run complete: exit_code=${exitCode} duration=${duration}ms`);
     return new vscode.LanguageModelToolResult([
       new vscode.LanguageModelTextPart(`${stdout}\n[exit code: ${exitCode}]`),
     ]);
