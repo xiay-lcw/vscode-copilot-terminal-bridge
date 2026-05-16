@@ -21,7 +21,9 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
         message: new vscode.MarkdownString(`\`\`\`\`\`bash\n${command}\n\`\`\`\`\``),
       },
       // Patched ext host forwards this → main thread renders terminal card
+      // kind:"terminal" is required so resolveAutoConfirmFromHook preserves it
       toolSpecificData: {
+        kind: 'terminal',
         commandLine: { original: command },
         language: 'shellscript',
       },
