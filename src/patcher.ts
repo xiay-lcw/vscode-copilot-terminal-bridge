@@ -22,6 +22,8 @@ import * as path from 'path';
  */
 
 const PATCH_MARKER = '/*terminal-bridge-patched*/';
+const PATCH_VERSION = 'v2'; // bump when adding/changing patches
+const VERSIONED_MARKER = `${PATCH_MARKER}${PATCH_VERSION}`;
 const EXTENSION_ID = 'terminal-bridge.terminal-bridge';
 
 // --- Patch 1: ext host — forward toolSpecificData from prepareInvocation ---
@@ -85,7 +87,7 @@ export class ExtHostPatcher {
 
   isPatched(): boolean {
     return this.targets.every(t => {
-      try { return fs.readFileSync(t.path, 'utf8').includes(PATCH_MARKER); } catch { return false; }
+      try { return fs.readFileSync(t.path, 'utf8').includes(VERSIONED_MARKER); } catch { return false; }
     });
   }
 
@@ -97,6 +99,17 @@ export class ExtHostPatcher {
       return needsRestart;
     }
 
+    // Stale marker from older patch version — restore from backup first
+    for (const t of this.targets) {
+      try {
+        const content = fs.readFileSync(t.path, 'utf8');
+        if (content.includes(PATCH_MARKER) && !content.includes(VERSIONED_MARKER) && fs.existsSync(t.backupPath)) {
+          fs.copyFileSync(t.backupPath, t.path);
+          this.log.info(`[Patcher] ${t.name}: restored stale patch from backup`);
+        }
+      } catch {}
+    }
+
     for (const t of this.targets) {
       if (!fs.existsSync(t.path)) {
         this.log.warn(`[Patcher] ${t.name} bundle not found: ${t.path}`);
@@ -104,7 +117,7 @@ export class ExtHostPatcher {
       }
 
       let content = fs.readFileSync(t.path, 'utf8');
-      if (content.includes(PATCH_MARKER)) continue;
+      if (content.includes(VERSIONED_MARKER)) continue;
 
       if (!fs.existsSync(t.backupPath)) {
         fs.copyFileSync(t.path, t.backupPath);
@@ -122,7 +135,7 @@ export class ExtHostPatcher {
       }
 
       if (applied > 0) {
-        content = PATCH_MARKER + '\n' + content;
+        content = VERSIONED_MARKER + '\n' + content;
         const tmp = t.path + '.tmp-' + Date.now();
         fs.writeFileSync(tmp, content, 'utf8');
         fs.renameSync(tmp, t.path);
