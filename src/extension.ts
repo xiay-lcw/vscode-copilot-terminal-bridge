@@ -32,11 +32,5 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   reg('terminal_bg_exit', new BgExitTool(log));
   reg('terminal_bg_list_jobs', new BgListJobsTool(log));
 
-  context.subscriptions.push(vscode.commands.registerCommand('terminal-bridge.testChat', async () => {
-    await vscode.commands.executeCommand('workbench.action.chat.open', {
-      query: 'use #run to execute: echo LINE1 && sleep 5 && echo LINE2 && sleep 5 && echo LINE3',
-      isPartialQuery: false,
-    });
-  }));
   log.info('Terminal Bridge activated — 7 tools registered');
 }
