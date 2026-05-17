@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { platform } from 'node:os';
+import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { platform, tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const IS_WINDOWS = platform() === 'win32';
 
@@ -13,14 +15,27 @@ export interface ExecResult {
   exitCode: number;
 }
 
-function shellArgs(script: string): [string, string[]] {
-  return IS_WINDOWS ? ['wsl', ['bash', '-c', script]] : ['bash', ['-c', script]];
+/**
+ * Write script to a temp file and run `bash <file>` to avoid
+ * double-expansion of $ variables through `bash -c "..."`.
+ */
+function prepareScript(script: string): { scriptPath: string; cmd: string; args: string[] } {
+  const dir = mkdtempSync(join(tmpdir(), 'tb-'));
+  const scriptPath = join(dir, 'run.sh');
+  writeFileSync(scriptPath, script, 'utf8');
+
+  if (IS_WINDOWS) {
+    // Convert Windows path to WSL path
+    const wslPath = scriptPath.replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`).replace(/\\/g, '/');
+    return { scriptPath, cmd: 'wsl', args: ['bash', wslPath] };
+  }
+  return { scriptPath, cmd: 'bash', args: [scriptPath] };
 }
 
 /** Run a bash script, merging stdout+stderr. Returns when done. */
 export function shellExec(script: string, timeoutMs = 300_000): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    const [cmd, args] = shellArgs(script);
+    const { scriptPath, cmd, args } = prepareScript(script);
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     let killed = false;
@@ -32,6 +47,7 @@ export function shellExec(script: string, timeoutMs = 300_000): Promise<ExecResu
     proc.on('error', (err) => { clearTimeout(timer); reject(err); });
     proc.on('close', (code) => {
       clearTimeout(timer);
+      try { unlinkSync(scriptPath); } catch {}
       resolve({ stdout: Buffer.concat(chunks).toString('utf-8'), exitCode: killed ? 124 : (code ?? -1) });
     });
   });
@@ -44,7 +60,7 @@ export function shellExecStreaming(
   timeoutMs = 300_000,
 ): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    const [cmd, args] = shellArgs(script);
+    const { scriptPath, cmd, args } = prepareScript(script);
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     let killed = false;
@@ -57,6 +73,7 @@ export function shellExecStreaming(
     proc.on('error', (err) => { clearTimeout(timer); reject(err); });
     proc.on('close', (code) => {
       clearTimeout(timer);
+      try { unlinkSync(scriptPath); } catch {}
       resolve({ stdout: output, exitCode: killed ? 124 : (code ?? -1) });
     });
   });
