@@ -48,7 +48,7 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
           kind: 'terminal',
           commandLine: { original: command },
           language: 'shellscript',
-          terminalCommandOutput: { text: accumulated },
+          terminalCommandOutput: { text: accumulated.replace(/\n/g, '\r\n') },
         },
       });
     });
@@ -60,7 +60,7 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
       new vscode.LanguageModelTextPart(`${stdout}\n[exit code: ${exitCode}]`),
     ]);
     (result as any).toolMetadata = {
-      terminalCommandOutput: { text: stdout },
+      terminalCommandOutput: { text: stdout.replace(/\n/g, '\r\n') },
       terminalCommandState: { exitCode, duration },
     };
     return result;
