@@ -3,83 +3,107 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Patches the VS Code ext host to forward toolSpecificData from
- * prepareInvocation() through the IPC boundary.
+ * Two patches that enable terminal-style tool rendering for extension tools:
  *
- * Without this patch, extension-registered tools cannot set toolSpecificData
- * (only invocationMessage, pastTenseMessage, confirmationMessages, presentation
- * are forwarded). The main thread ALREADY handles toolSpecificData — this patch
- * simply removes the ext host serialization gap.
+ * 1. Ext host (extensionHostProcess.js): forward toolSpecificData from
+ *    prepareInvocation() through IPC. Without this, only 4 fields cross the
+ *    wire (invocationMessage, pastTenseMessage, confirmationMessages, presentation).
+ *
+ * 2. Workbench (workbench.desktop.main.js): after invoke() completes, merge
+ *    toolMetadata from the result into toolSpecificData on the invocation model.
+ *    This lets the tool set output text and exit code after execution.
  */
 
 const PATCH_MARKER = '/*terminal-bridge-patched*/';
 
-const FIND = 'return{confirmationMessages:s.confirmationMessages?{title:typeof s.confirmationMessages.title=="string"?s.confirmationMessages.title:ge.from(s.confirmationMessages.title),message:typeof s.confirmationMessages.message=="string"?s.confirmationMessages.message:ge.from(s.confirmationMessages.message),approveCombination:l&&d?{label:l,key:d,arguments:a.arguments}:void 0}:void 0,invocationMessage:ge.fromStrict(s.invocationMessage),pastTenseMessage:ge.fromStrict(s.pastTenseMessage),presentation:s.presentation}';
+// --- Patch 1: ext host — forward toolSpecificData from prepareInvocation ---
+const EH_FIND = 'return{confirmationMessages:s.confirmationMessages?{title:typeof s.confirmationMessages.title=="string"?s.confirmationMessages.title:ge.from(s.confirmationMessages.title),message:typeof s.confirmationMessages.message=="string"?s.confirmationMessages.message:ge.from(s.confirmationMessages.message),approveCombination:l&&d?{label:l,key:d,arguments:a.arguments}:void 0}:void 0,invocationMessage:ge.fromStrict(s.invocationMessage),pastTenseMessage:ge.fromStrict(s.pastTenseMessage),presentation:s.presentation}';
 
-const REPLACE = 'return{confirmationMessages:s.confirmationMessages?{title:typeof s.confirmationMessages.title=="string"?s.confirmationMessages.title:ge.from(s.confirmationMessages.title),message:typeof s.confirmationMessages.message=="string"?s.confirmationMessages.message:ge.from(s.confirmationMessages.message),approveCombination:l&&d?{label:l,key:d,arguments:a.arguments}:void 0}:void 0,invocationMessage:ge.fromStrict(s.invocationMessage),pastTenseMessage:ge.fromStrict(s.pastTenseMessage),presentation:s.presentation,toolSpecificData:s.toolSpecificData}';
+const EH_REPLACE = 'return{confirmationMessages:s.confirmationMessages?{title:typeof s.confirmationMessages.title=="string"?s.confirmationMessages.title:ge.from(s.confirmationMessages.title),message:typeof s.confirmationMessages.message=="string"?s.confirmationMessages.message:ge.from(s.confirmationMessages.message),approveCombination:l&&d?{label:l,key:d,arguments:a.arguments}:void 0}:void 0,invocationMessage:ge.fromStrict(s.invocationMessage),pastTenseMessage:ge.fromStrict(s.pastTenseMessage),presentation:s.presentation,toolSpecificData:s.toolSpecificData}';
+
+// --- Patch 2: workbench — merge toolMetadata into toolSpecificData after invoke ---
+const WB_FIND = 'this.ensureToolDetails(e,v,g.data,c);let x=await c?.didExecuteTool';
+
+const WB_REPLACE = 'this.ensureToolDetails(e,v,g.data,c);c&&c.toolSpecificData?.kind==="terminal"&&v?.toolMetadata&&Object.assign(c.toolSpecificData,v.toolMetadata);let x=await c?.didExecuteTool';
+
+interface PatchTarget {
+  name: string;
+  path: string;
+  backupPath: string;
+  find: string;
+  replace: string;
+}
 
 export class ExtHostPatcher {
-  private readonly bundlePath: string;
-  private readonly backupPath: string;
+  private readonly targets: PatchTarget[];
   private readonly log: vscode.LogOutputChannel;
 
   constructor(log: vscode.LogOutputChannel) {
     this.log = log;
     const appRoot = vscode.env.appRoot;
-    this.bundlePath = path.join(appRoot, 'out', 'vs', 'workbench', 'api', 'node', 'extensionHostProcess.js');
-    this.backupPath = this.bundlePath + '.terminal-bridge-backup';
+
+    const ehPath = path.join(appRoot, 'out', 'vs', 'workbench', 'api', 'node', 'extensionHostProcess.js');
+    const wbPath = path.join(appRoot, 'out', 'vs', 'workbench', 'workbench.desktop.main.js');
+
+    this.targets = [
+      { name: 'ext-host', path: ehPath, backupPath: ehPath + '.terminal-bridge-backup', find: EH_FIND, replace: EH_REPLACE },
+      { name: 'workbench', path: wbPath, backupPath: wbPath + '.terminal-bridge-backup', find: WB_FIND, replace: WB_REPLACE },
+    ];
   }
 
   isPatched(): boolean {
-    try {
-      return fs.readFileSync(this.bundlePath, 'utf8').includes(PATCH_MARKER);
-    } catch {
-      return false;
-    }
+    return this.targets.every(t => {
+      try { return fs.readFileSync(t.path, 'utf8').includes(PATCH_MARKER); } catch { return false; }
+    });
   }
 
   async ensurePatch(): Promise<boolean> {
-    if (!fs.existsSync(this.bundlePath)) {
-      this.log.warn(`[Patcher] Ext host bundle not found: ${this.bundlePath}`);
-      return false;
-    }
-
     if (this.isPatched()) {
       this.log.info('[Patcher] Already patched');
       return false;
     }
 
-    let content = fs.readFileSync(this.bundlePath, 'utf8');
+    let applied = 0;
+    for (const t of this.targets) {
+      if (!fs.existsSync(t.path)) {
+        this.log.warn(`[Patcher] ${t.name} bundle not found: ${t.path}`);
+        continue;
+      }
 
-    if (!content.includes(FIND)) {
-      this.log.warn('[Patcher] Target code pattern not found — VS Code version may have changed');
-      return false;
+      let content = fs.readFileSync(t.path, 'utf8');
+      if (content.includes(PATCH_MARKER)) { applied++; continue; }
+
+      if (!content.includes(t.find)) {
+        this.log.warn(`[Patcher] ${t.name}: target pattern not found — VS Code version may have changed`);
+        continue;
+      }
+
+      if (!fs.existsSync(t.backupPath)) {
+        fs.copyFileSync(t.path, t.backupPath);
+        this.log.info(`[Patcher] ${t.name}: backup created`);
+      }
+
+      content = PATCH_MARKER + '\n' + content.replace(t.find, t.replace);
+      const tmp = t.path + '.tmp-' + Date.now();
+      fs.writeFileSync(tmp, content, 'utf8');
+      fs.renameSync(tmp, t.path);
+      this.log.info(`[Patcher] ${t.name}: patch applied`);
+      applied++;
     }
 
-    // Backup
-    if (!fs.existsSync(this.backupPath)) {
-      fs.copyFileSync(this.bundlePath, this.backupPath);
-      this.log.info('[Patcher] Backup created');
-    }
-
-    content = content.replace(FIND, REPLACE);
-    content = PATCH_MARKER + '\n' + content;
-
-    const tempPath = this.bundlePath + '.tmp-' + Date.now();
-    fs.writeFileSync(tempPath, content, 'utf8');
-    fs.renameSync(tempPath, this.bundlePath);
-
-    this.log.info('[Patcher] Patch applied — toolSpecificData now forwarded through ext host IPC');
-    return true;
+    return applied > 0;
   }
 
   restore(): boolean {
-    if (fs.existsSync(this.backupPath)) {
-      fs.copyFileSync(this.backupPath, this.bundlePath);
-      fs.unlinkSync(this.backupPath);
-      this.log.info('[Patcher] Restored from backup');
-      return true;
+    let restored = 0;
+    for (const t of this.targets) {
+      if (fs.existsSync(t.backupPath)) {
+        fs.copyFileSync(t.backupPath, t.path);
+        fs.unlinkSync(t.backupPath);
+        this.log.info(`[Patcher] ${t.name}: restored from backup`);
+        restored++;
+      }
     }
-    return false;
+    return restored > 0;
   }
 }

@@ -43,8 +43,15 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     const duration = Date.now() - start;
 
     this.log.info(`fg_run complete: exit_code=${exitCode} duration=${duration}ms`);
-    return new vscode.LanguageModelToolResult([
+    const result = new vscode.LanguageModelToolResult([
       new vscode.LanguageModelTextPart(`${stdout}\n[exit code: ${exitCode}]`),
     ]);
+    // toolMetadata is forwarded by ext host → main thread patch merges it
+    // into toolSpecificData so the terminal card shows output + exit code
+    (result as any).toolMetadata = {
+      terminalCommandOutput: { text: stdout },
+      terminalCommandState: { exitCode, duration },
+    };
+    return result;
   }
 }
