@@ -2,7 +2,7 @@
   "name": "terminal-bridge",
   "displayName": "Terminal Bridge for Copilot Chat",
   "description": "Terminal tools for Copilot Chat — runs commands directly in WSL/Linux via child_process, no MCP dependency",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "terminal-bridge",
   "engines": {
     "vscode": "^1.100.0"
@@ -15,6 +15,9 @@
   ],
   "activationEvents": [
     "onStartupFinished"
+  ],
+  "enabledApiProposals": [
+    "toolProgress"
   ],
   "main": "./dist/extension.js",
   "contributes": {

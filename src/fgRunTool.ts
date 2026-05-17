@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { shellExec, sq } from './exec';
+import { shellExecStreaming, sq } from './exec';
 
 interface FgRunInput {
   command: string;
@@ -20,8 +20,6 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
         title: 'Run in terminal?',
         message: new vscode.MarkdownString(`\`\`\`\`\`bash\n${command}\n\`\`\`\`\``),
       },
-      // Patched ext host forwards this → main thread renders terminal card
-      // kind:"terminal" is required so resolveAutoConfirmFromHook preserves it
       toolSpecificData: {
         kind: 'terminal',
         commandLine: { original: command },
@@ -33,21 +31,34 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
   async invoke(
     options: vscode.LanguageModelToolInvocationOptions<FgRunInput>,
     _token: vscode.CancellationToken,
+    progress?: { report(value: any): void },
   ): Promise<vscode.LanguageModelToolResult> {
     const { command, cwd } = options.input;
     this.log.info(`fg_run: ${command}${cwd ? ` (cwd: ${cwd})` : ''}`);
 
     const start = Date.now();
     const script = cwd ? `cd ${sq(cwd)} || exit 1\n${command}` : command;
-    const { stdout, exitCode } = await shellExec(script);
-    const duration = Date.now() - start;
 
+    const { stdout, exitCode } = await shellExecStreaming(script, (accumulated) => {
+      if (!progress) return;
+      const lastLine = accumulated.trimEnd().split('\n').pop() ?? '';
+      progress.report({
+        message: lastLine,
+        toolSpecificData: {
+          kind: 'terminal',
+          commandLine: { original: command },
+          language: 'shellscript',
+          terminalCommandOutput: { text: accumulated },
+        },
+      });
+    });
+
+    const duration = Date.now() - start;
     this.log.info(`fg_run complete: exit_code=${exitCode} duration=${duration}ms`);
+
     const result = new vscode.LanguageModelToolResult([
       new vscode.LanguageModelTextPart(`${stdout}\n[exit code: ${exitCode}]`),
     ]);
-    // toolMetadata is forwarded by ext host → main thread patch merges it
-    // into toolSpecificData so the terminal card shows output + exit code
     (result as any).toolMetadata = {
       terminalCommandOutput: { text: stdout },
       terminalCommandState: { exitCode, duration },
