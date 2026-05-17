@@ -22,7 +22,7 @@ import * as path from 'path';
  */
 
 const PATCH_MARKER = '/*terminal-bridge-patched*/';
-const PATCH_VERSION = 'v2'; // bump when adding/changing patches
+const PATCH_VERSION = 'v3'; // bump when adding/changing patches
 const VERSIONED_MARKER = `${PATCH_MARKER}${PATCH_VERSION}`;
 const EXTENSION_ID = 'terminal-bridge.terminal-bridge';
 
@@ -44,7 +44,12 @@ const EH2_REPLACE = 'this._proxy.$acceptToolProgress(t.callId,{message:ge.fromSt
 // --- Patch 4: workbench — merge toolSpecificData in acceptProgress + trigger re-render ---
 const WB2_FIND = 'acceptProgress(i){let e=this._progress.get();this._progress.set({progress:i.progress||e.progress||0,message:i.message},void 0)}';
 
-const WB2_REPLACE = 'acceptProgress(i){let e=this._progress.get();this._progress.set({progress:i.progress||e.progress||0,message:i.message},void 0);i.toolSpecificData&&this._toolSpecificData&&(Object.assign(this._toolSpecificData,i.toolSpecificData),this._toolSpecificDataKind.set(this._toolSpecificData.kind,void 0))}';
+const WB2_REPLACE = 'acceptProgress(i){let e=this._progress.get();this._progress.set({progress:i.progress||e.progress||0,message:i.message},void 0);i.toolSpecificData&&this._toolSpecificData&&Object.assign(this._toolSpecificData,i.toolSpecificData)}';
+
+// --- Patch 5: workbench — autorun also fires on _progress changes so terminal card re-renders ---
+const WB3_FIND = 'let w=e.state.read(y).type!==b,x=e.toolSpecificDataKind.read(y)!==S;(w||x)&&f()';
+
+const WB3_REPLACE = 'let w=e.state.read(y).type!==b,x=e.toolSpecificDataKind.read(y)!==S,P=e._progress?e._progress.read(y):null;(w||x||(P&&e._toolSpecificData?.kind==="terminal"&&e._toolSpecificData?.terminalCommandOutput))&&f()';
 
 interface PatchDef { find: string; replace: string }
 
@@ -80,6 +85,7 @@ export class ExtHostPatcher {
         patches: [
           { find: WB1_FIND, replace: WB1_REPLACE },
           { find: WB2_FIND, replace: WB2_REPLACE },
+          { find: WB3_FIND, replace: WB3_REPLACE },
         ],
       },
     ];
