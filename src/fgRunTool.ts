@@ -16,10 +16,6 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     const { command } = options.input;
     return {
       invocationMessage: new vscode.MarkdownString(`Running \`${command}\``),
-      confirmationMessages: {
-        title: 'Run in Terminal',
-        message: new vscode.MarkdownString(`\`\`\`bash\n${command}\n\`\`\``),
-      },
       toolSpecificData: {
         kind: 'terminal',
         commandLine: { original: command },
@@ -43,7 +39,13 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     const { stdout, exitCode } = await shellExecStreaming(script, (accumulated) => {
       if (!progress) return;
       const lastLine = accumulated.trimEnd().split('\n').pop() ?? '';
-      progress.report({ message: lastLine });
+      progress.report({
+        message: lastLine,
+        toolSpecificData: {
+          kind: 'terminal',
+          terminalCommandOutput: { text: accumulated.replace(/\n/g, '\r\n') },
+        },
+      });
     });
 
     const duration = Date.now() - start;
