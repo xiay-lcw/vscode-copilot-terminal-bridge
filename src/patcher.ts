@@ -3,24 +3,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Four patches that enable terminal-style tool rendering for extension tools:
+ * Six patches that enable terminal-style tool rendering for extension tools:
  *
- * 1. Ext host (extensionHostProcess.js): forward toolSpecificData from
- *    prepareInvocation() through IPC.
- *
- * 2. Workbench (workbench.desktop.main.js): after invoke() completes, merge
- *    toolMetadata from the result into toolSpecificData on the invocation model.
- *
+ * 1. Ext host: forward toolSpecificData from prepareInvocation() through IPC.
+ * 2. Workbench: merge toolMetadata from result into toolSpecificData after invoke.
  * 3. Ext host: forward toolSpecificData from progress.report() during invoke.
- *
- * 4. Workbench: merge toolSpecificData in acceptProgress() so the terminal card
- *    receives updated data during execution.
- *
- * 5. product.json: enable toolProgress proposed API for this extension.
+ * 4. Workbench: merge toolSpecificData in acceptProgress() during execution.
+ * 5. Workbench: re-render existing snapshot mirror on updated output data.
+ * 6. Workbench: poll _updateTerminalContent when no live terminal (streaming).
+ * 7. product.json: enable toolProgress proposed API for this extension.
  */
 
 const PATCH_MARKER = 'terminal-bridge-patched';
-const PATCH_VERSION = 'v14'; // bump when adding/changing patches
+const PATCH_VERSION = 'v18'; // bump when adding/changing patches
 const VERSIONED_MARKER = `/*${PATCH_MARKER}-${PATCH_VERSION}*/`;
 const EXTENSION_ID = 'terminal-bridge.terminal-bridge';
 
@@ -43,6 +38,26 @@ const EH2_REPLACE = 'this._proxy.$acceptToolProgress(t.callId,{message:ge.fromSt
 const WB2_FIND = 'acceptProgress(i){let e=this._progress.get();this._progress.set({progress:i.progress||e.progress||0,message:i.message},void 0)}';
 
 const WB2_REPLACE = 'acceptProgress(i){i.toolSpecificData&&this._toolSpecificData&&Object.assign(this._toolSpecificData,i.toolSpecificData);let e=this._progress.get();this._progress.set({progress:i.progress||e.progress||0,message:i.message},void 0)}';
+
+// --- Patch 5: workbench — re-render existing snapshot mirror with new output ---
+const WB3_FIND = '_renderSnapshotOutput(e){if(this._snapshotMirror){this._layoutOutput(e.lineCount??this._lastRenderedLineCount??0);return}';
+
+const WB3_REPLACE = '_renderSnapshotOutput(e){if(this._snapshotMirror){this._snapshotMirror.setOutput(e);this._snapshotMirror.render().then(t=>{let n=t?.lineCount??e.lineCount??0;this._layoutOutput(n);this._isAtBottom&&this._scrollOutputToBottom();e.text?.length>0&&this._hideEmptyMessage()});return}';
+
+// --- Patch 6: workbench — poll _updateTerminalContent when no live terminal ---
+const WB4_FIND = 'async _updateTerminalContent(){let e=await this._resolveLiveTerminal(),t=e?this._resolveCommand():void 0,o=this._getTerminalCommandOutput();if(!(e&&t&&await this._renderLiveOutput(e,t))){if(this._disposeLiveMirror(),o){await this._renderSnapshotOutput(o);return}this._hasTerminalSession&&this._renderUnavailableMessage(e)}}';
+
+const WB4_REPLACE = 'async _updateTerminalContent(){let e=await this._resolveLiveTerminal(),t=e?this._resolveCommand():void 0,o=this._getTerminalCommandOutput();if(!(e&&t&&await this._renderLiveOutput(e,t))){if(this._disposeLiveMirror(),o){await this._renderSnapshotOutput(o)}else this._hasTerminalSession&&this._renderUnavailableMessage(e)}if(!this._store.isDisposed&&!e)setTimeout(()=>{this._store.isDisposed||this._updateTerminalContent()},500)}';
+
+// --- Patch 7: workbench — reset xterm buffer before re-render to prevent duplication ---
+const WB5_FIND = 'await new Promise(r=>t.xterm.write(o,r))';
+
+const WB5_REPLACE = 'await new Promise(r=>t.xterm.write((this._lastRenderedLineCount?String.fromCharCode(27)+"c":"")+o,r))';
+
+// --- Patch 8: workbench — don't skip initial collapsible expand (triggers output toggle) ---
+const WB6_FIND = 'let b=!0;return this._register(ve(S=>{let y=v.expanded.read(S);if(b){b=!1;return}this._toggleOutput(y)}))';
+
+const WB6_REPLACE = 'return this._register(ve(S=>{let y=v.expanded.read(S);this._toggleOutput(y)}))';
 
 interface PatchDef { find: string; replace: string }
 
@@ -78,6 +93,10 @@ export class ExtHostPatcher {
         patches: [
           { find: WB1_FIND, replace: WB1_REPLACE },
           { find: WB2_FIND, replace: WB2_REPLACE },
+          { find: WB3_FIND, replace: WB3_REPLACE },
+          { find: WB4_FIND, replace: WB4_REPLACE },
+          { find: WB5_FIND, replace: WB5_REPLACE },
+          { find: WB6_FIND, replace: WB6_REPLACE },
         ],
       },
     ];

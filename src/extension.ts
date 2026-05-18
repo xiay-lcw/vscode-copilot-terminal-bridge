@@ -38,7 +38,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Small delay to let new chat open
     await new Promise(r => setTimeout(r, 500));
     await vscode.commands.executeCommand('workbench.action.chat.open', {
-      query: 'use #run to execute: echo LINE1 && sleep 2 && echo LINE2 && sleep 2 && echo LINE3',
+      query: 'use #run to execute: echo LINE1 && sleep 3 && echo LINE2 && sleep 3 && echo LINE3',
       isPartialQuery: false,
     });
   }));
