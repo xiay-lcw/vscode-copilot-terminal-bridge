@@ -1,11 +1,13 @@
 # terminal-bridge
 
 VS Code extension that registers 7 terminal tools for Copilot Chat, executing
-commands directly in WSL/Linux via `child_process.spawn`. No MCP server dependency.
+commands directly in WSL/Linux via `child_process.spawn`. No MCP server
+dependency.
 
-Patches VS Code's ext host and workbench bundles to enable native terminal card
-rendering — the same confirmation card, command display, and output viewport
-that the built-in `RunInTerminalTool` uses.
+Patches VS Code's ext host and workbench bundles at activation to enable native
+terminal card rendering with streaming output — the same command display,
+syntax highlighting, and xterm output viewport that the built-in
+`RunInTerminalTool` uses.
 
 ## Tools
 
@@ -23,5 +25,77 @@ that the built-in `RunInTerminalTool` uses.
 
 ### Execution
 
-All tools use `child_process.spawn` to run bash commands:
-- **Windows**: spawns `wsl bash -c "..."` 
+Commands execute via `child_process.spawn`:
+
+- **Windows** — spawns `wsl bash` with a temp script file (avoids `$` expansion
+  issues with `bash -c`)
+- **Linux / WSL** — spawns `bash` directly
+
+Background tools (`bg_*`) use tmux sessions for persistence.
+
+### Terminal card rendering
+
+VS Code's built-in terminal tool uses internal `toolSpecificData` with
+`kind: "terminal"` to trigger a dedicated rendering path (command card with
+syntax highlighting + xterm output widget). This path is not exposed to
+extension-registered tools by default.
+
+The extension patches two VS Code bundles at activation to bridge this gap:
+
+| # | Target | Patch | Purpose |
+|---|--------|-------|---------|
+| EH1 | ext host | Forward `toolSpecificData` from `prepareInvocation` | Gets `kind:"terminal"` across the IPC boundary |
+| EH2 | ext host | Forward `toolSpecificData` from `progress.report` | Streams output data during execution |
+| WB1 | workbench | Merge `toolMetadata` from result after invoke | Final output + exit code on the card |
+| WB2 | workbench | Merge `toolSpecificData` in `acceptProgress` | Updates card data during execution |
+| WB3 | workbench | Re-render existing snapshot mirror (`setOutput` + `render`) | Live output update without recreating the mirror |
+| WB4 | workbench | Poll `_updateTerminalContent` every 500ms | Drives snapshot re-render when no live terminal |
+| WB5 | workbench | Reset xterm buffer (ESC c) before re-render | Prevents output duplication on re-render |
+| WB6 | workbench | Remove initial-skip in collapsible expand observer | Auto-expands output view during execution |
+| — | product.json | Add `toolProgress` to `extensionEnabledApiProposals` | Enables the proposed progress API |
+
+Patches are versioned (`/*terminal-bridge-patched-vN*/`) and auto-restore from
+backup on version mismatch. A VS Code restart is required after first
+activation to load the patched bundles.
+
+### Rendering behavior
+
+During execution:
+
+1. Terminal card auto-expands with the command in a syntax-highlighted code
+   block (shellscript language).
+2. Output streams progressively — each `progress.report` sends accumulated
+   stdout via `toolSpecificData.terminalCommandOutput`, which the 500ms poll
+   picks up and re-renders in the xterm snapshot mirror.
+3. A "Running" spinner label shows the last output line.
+
+After completion:
+
+4. The card auto-collapses to a single-line summary ("Ran `<command>`").
+5. Expanding the card reveals the full output in a dark terminal widget with
+   the final exit code and duration.
+
+## Build
+
+```bash
+npm install
+node esbuild.mjs          # bundle to dist/extension.js
+npm run typecheck          # tsc --noEmit
+```
+
+## Package
+
+```bash
+npx @vscode/vsce package --no-dependencies
+```
+
+Produces `terminal-bridge-<version>.vsix`.
+
+## Install
+
+```bash
+code-insiders --install-extension terminal-bridge-<version>.vsix --force
+```
+
+After install, restart VS Code. The extension activates on startup, patches the
+bundles, and prompts for a second restart to load them.
