@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
-import { shellExec, sq } from './exec';
+import { sq } from './exec';
+import { Transport } from './transport';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -30,7 +31,7 @@ function badId(id: string): vscode.LanguageModelToolResult | null {
 interface LaunchInput { command: string; cwd?: string; interactive?: boolean }
 
 export class BgLaunchTool implements vscode.LanguageModelTool<LaunchInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
 
   prepareInvocation(opts: vscode.LanguageModelToolInvocationPrepareOptions<LaunchInput>) {
     return {
@@ -57,11 +58,12 @@ date -Iseconds > ${d}/created_at
 printf '%s' ${sq(mode)} > ${d}/mode
 touch ${d}/running`;
 
-    const { exitCode: rc } = await shellExec(setup);
+    const t = this.getTransport();
+    const { exitCode: rc } = await t.exec(setup);
     if (rc !== 0) return txt('ok: false\nerror: Failed to create job directory');
 
     if (interactive) {
-      await shellExec(
+      await t.exec(
         `tmux new-session -d -s ${sq(id)}` +
         ` && tmux pipe-pane -t ${sq(id)} "cat >> ${d}/output.log"` +
         ` && tmux send-keys -l -t ${sq(id)} ${sq(command)} Enter`,
@@ -80,7 +82,7 @@ sleep 0.2
 echo $EXIT > "$JD/exitcode"
 rm -f "$JD/running"`;
 
-      await shellExec(`cat > ${d}/run.sh << 'BWEOF'\n${wrapper}\nBWEOF\ntmux new-session -d -s ${sq(id)} "bash ${d}/run.sh"`);
+      await t.exec(`cat > ${d}/run.sh << 'BWEOF'\n${wrapper}\nBWEOF\ntmux new-session -d -s ${sq(id)} "bash ${d}/run.sh"`);
     }
 
     return txt(`job_id: ${id}\nlog_path: ${d}/output.log\nmode: ${mode}`);
@@ -94,14 +96,14 @@ rm -f "$JD/running"`;
 interface StatusInput { job_id: string }
 
 export class BgStatusTool implements vscode.LanguageModelTool<StatusInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<StatusInput>): Promise<vscode.LanguageModelToolResult> {
     const { job_id } = opts.input;
     const err = badId(job_id); if (err) return err;
     const d = jd(job_id);
 
-    const { stdout } = await shellExec(`
+    const { stdout } = await this.getTransport().exec(`
 [ -d ${d} ] || { echo "NOT_FOUND"; exit; }
 MODE=$(cat ${d}/mode 2>/dev/null || echo oneshot)
 if [ -f ${d}/running ]; then echo "running"; exit; fi
@@ -125,7 +127,7 @@ echo "unknown"`);
 interface OutputInput { job_id: string; tail?: number }
 
 export class BgGetOutputTool implements vscode.LanguageModelTool<OutputInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<OutputInput>): Promise<vscode.LanguageModelToolResult> {
     const { job_id, tail = 20 } = opts.input;
@@ -133,7 +135,7 @@ export class BgGetOutputTool implements vscode.LanguageModelTool<OutputInput> {
     const d = jd(job_id);
     const n = tail === -1 ? 10000 : Math.min(Math.max(0, tail), 10000);
 
-    const { stdout } = await shellExec(
+    const { stdout } = await this.getTransport().exec(
       `[ -d ${d} ] || { echo "__NF__"; exit; }; [ -f ${d}/output.log ] && tail -n ${n} ${d}/output.log || true`,
     );
     if (stdout.trim() === '__NF__') return txt(`ok: false\nerror: Job ${job_id} not found`);
@@ -150,7 +152,7 @@ export class BgGetOutputTool implements vscode.LanguageModelTool<OutputInput> {
 interface SendInput { job_id: string; command: string }
 
 export class BgSendCmdTool implements vscode.LanguageModelTool<SendInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
 
   prepareInvocation(opts: vscode.LanguageModelToolInvocationPrepareOptions<SendInput>) {
     return {
@@ -167,7 +169,7 @@ export class BgSendCmdTool implements vscode.LanguageModelTool<SendInput> {
     const err = badId(job_id); if (err) return err;
     const d = jd(job_id);
 
-    const { stdout } = await shellExec(`
+    const { stdout } = await this.getTransport().exec(`
 [ -d ${d} ] || { echo "not_found"; exit 1; }
 [ "$(cat ${d}/mode 2>/dev/null)" = "interactive" ] || { echo "not_interactive"; exit 1; }
 [ -f ${d}/running ] || { echo "not_running"; exit 1; }
@@ -191,14 +193,14 @@ tmux send-keys -l -t ${sq(job_id)} ${sq(command)} Enter && echo "ok"`);
 interface ExitInput { job_id: string; timeout?: number }
 
 export class BgExitTool implements vscode.LanguageModelTool<ExitInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<ExitInput>): Promise<vscode.LanguageModelToolResult> {
     const { job_id, timeout = 60 } = opts.input;
     const err = badId(job_id); if (err) return err;
     const d = jd(job_id);
 
-    await shellExec(`
+    await this.getTransport().exec(`
 [ -d ${d} ] || exit 0
 MODE=$(cat ${d}/mode 2>/dev/null || echo oneshot)
 if [ "$MODE" = "interactive" ] && [ -f ${d}/running ]; then
@@ -219,12 +221,12 @@ rm -f ${d}/running`, (timeout + 10) * 1000);
 interface ListInput { status_filter?: string; age_secs?: number }
 
 export class BgListJobsTool implements vscode.LanguageModelTool<ListInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<ListInput>): Promise<vscode.LanguageModelToolResult> {
     const { status_filter, age_secs = -1 } = opts.input;
 
-    const { stdout } = await shellExec(`
+    const { stdout } = await this.getTransport().exec(`
 JD="${JOBS}"; [ -d "$JD" ] || { echo ""; exit; }
 NOW=$(date +%s)
 for d in "$JD"/bg_*; do [ -d "$d" ] || continue

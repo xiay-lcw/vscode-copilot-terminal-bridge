@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { shellExecStreaming, sq } from './exec';
+import { sq } from './exec';
+import { Transport } from './transport';
 
 interface FgRunInput {
   command: string;
@@ -7,7 +8,10 @@ interface FgRunInput {
 }
 
 export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
-  constructor(private readonly log: vscode.LogOutputChannel) {}
+  constructor(
+    private readonly log: vscode.LogOutputChannel,
+    private readonly getTransport: () => Transport,
+  ) {}
 
   prepareInvocation(
     options: vscode.LanguageModelToolInvocationPrepareOptions<FgRunInput>,
@@ -31,12 +35,13 @@ export class FgRunTool implements vscode.LanguageModelTool<FgRunInput> {
     progress?: { report(value: any): void },
   ): Promise<vscode.LanguageModelToolResult> {
     const { command, cwd } = options.input;
-    this.log.info(`fg_run: ${command}${cwd ? ` (cwd: ${cwd})` : ''}`);
+    const transport = this.getTransport();
+    this.log.info(`fg_run [${transport.name}]: ${command}${cwd ? ` (cwd: ${cwd})` : ''}`);
 
     const start = Date.now();
     const script = cwd ? `cd ${sq(cwd)} || exit 1\n${command}` : command;
 
-    const { stdout, exitCode } = await shellExecStreaming(script, (accumulated) => {
+    const { stdout, exitCode } = await transport.execStreaming(script, (accumulated) => {
       if (!progress) return;
       const lastLine = accumulated.trimEnd().split('\n').pop() ?? '';
       progress.report({

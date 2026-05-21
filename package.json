@@ -2,7 +2,7 @@
   "name": "terminal-bridge",
   "displayName": "Terminal Bridge for Copilot Chat",
   "description": "Terminal tools for Copilot Chat \u2014 runs commands directly in WSL/Linux via child_process, no MCP dependency",
-  "version": "0.3.11",
+  "version": "0.4.0",
   "publisher": "terminal-bridge",
   "engines": {
     "vscode": "^1.100.0"
@@ -205,10 +205,41 @@
     ],
     "commands": [
       {
+        "command": "terminal-bridge.switchProfile",
+        "title": "Terminal Bridge: Switch Profile"
+      },
+      {
         "command": "terminal-bridge.testChat",
         "title": "Terminal Bridge: Test Chat"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Terminal Bridge",
+      "properties": {
+        "terminal-bridge.profiles": {
+          "type": "object",
+          "description": "Named terminal profiles. Each key is a profile name, value is { type, host?, port?, user?, identityFile?, distribution? }.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string", "enum": ["local", "wsl", "ssh"], "description": "Transport type" },
+              "host": { "type": "string", "description": "SSH host or alias from ~/.ssh/config" },
+              "port": { "type": "integer", "description": "SSH port (default 22)" },
+              "user": { "type": "string", "description": "SSH user" },
+              "identityFile": { "type": "string", "description": "SSH identity file path" },
+              "distribution": { "type": "string", "description": "WSL distribution name" }
+            },
+            "required": ["type"]
+          },
+          "default": {}
+        },
+        "terminal-bridge.activeProfile": {
+          "type": "string",
+          "description": "Active profile name. Empty for auto-detect (WSL on Windows, local bash on Linux).",
+          "default": ""
+        }
+      }
+    }
   },
   "scripts": {
     "build": "node esbuild.mjs",

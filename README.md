@@ -1,8 +1,8 @@
 # terminal-bridge
 
 VS Code extension that registers 7 terminal tools for Copilot Chat, executing
-commands directly in WSL/Linux via `child_process.spawn`. No MCP server
-dependency.
+commands via pluggable transport profiles — local bash, WSL, or SSH remotes.
+No MCP server dependency.
 
 Patches VS Code's ext host and workbench bundles at activation to enable native
 terminal card rendering with streaming output — the same command display,
@@ -21,17 +21,44 @@ syntax highlighting, and xterm output viewport that the built-in
 | `terminal_bg_exit` | `#stop` | Terminate a background job |
 | `terminal_bg_list_jobs` | `#list` | List background jobs with optional filters |
 
+## Profiles
+
+Configure named profiles in settings:
+
+```jsonc
+"terminal-bridge.profiles": {
+  "local": { "type": "local" },
+  "wsl-ubuntu": { "type": "wsl", "distribution": "Ubuntu" },
+  "dev-box": { "type": "ssh", "host": "dev.example.com", "user": "me" }
+},
+"terminal-bridge.activeProfile": "local"
+```
+
+| Type | Transport | Notes |
+|------|-----------|-------|
+| `local` | `bash <tmpfile>` | Direct execution on Linux |
+| `wsl` | `wsl [-d distro] bash <tmpfile>` | Windows → WSL |
+| `ssh` | `ssh host bash -s` via stdin | ControlMaster for connection reuse |
+
+Switch profiles via the status bar item or **Terminal Bridge: Switch Profile**
+command. When no profiles are configured, auto-detects WSL on Windows or local
+bash on Linux.
+
+SSH profiles use `ControlMaster=auto` with `ControlPersist=10m` for connection
+reuse. On Windows, SSH routes through WSL so `~/.ssh/config` and keys from WSL
+are used. Requires key-based auth (no interactive password prompts).
+
 ## How it works
 
 ### Execution
 
-Commands execute via `child_process.spawn`:
+Commands execute via `child_process.spawn` through the active transport:
 
-- **Windows** — spawns `wsl bash` with a temp script file (avoids `$` expansion
-  issues with `bash -c`)
-- **Linux / WSL** — spawns `bash` directly
+- **LocalTransport** — spawns `bash` with a temp script file
+- **WslTransport** — spawns `wsl bash` with a temp script (Windows path → WSL path)
+- **SshTransport** — spawns `ssh host bash -s` with script piped via stdin
 
-Background tools (`bg_*`) use tmux sessions for persistence.
+Background tools (`bg_*`) use tmux sessions on the target host for persistence.
 
 ### Terminal card rendering
 
