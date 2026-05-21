@@ -2,35 +2,46 @@ import * as vscode from 'vscode';
 import { FgRunTool } from './fgRunTool';
 import { BgLaunchTool, BgStatusTool, BgGetOutputTool, BgSendCmdTool, BgExitTool, BgListJobsTool } from './bg';
 import { ExtHostPatcher } from './patcher';
-import { Transport, ProfileConfig, createTransport, createDefaultTransport } from './transport';
+import { Transport, createTransport, createDefaultTransport } from './transport';
+import { readProfile, ensureProfilesDir } from './profiles';
+import { ProfileListTool, ProfileGetTool, ProfileSetTool, ProfileDeleteTool } from './profileTools';
 
-let activeTransport: Transport;
+const transportCache = new Map<string, Transport>();
 
-function resolveTransport(log: vscode.LogOutputChannel): Transport {
-  const cfg = vscode.workspace.getConfiguration('terminal-bridge');
-  const profiles: Record<string, ProfileConfig> = cfg.get('profiles') ?? {};
-  const activeName: string = cfg.get('activeProfile') ?? '';
+function makeResolver(log: vscode.LogOutputChannel) {
+  return (profileName?: string): Transport => {
+    const name = profileName || 'default';
+    const cached = transportCache.get(name);
+    if (cached) return cached;
 
-  if (activeName && profiles[activeName]) {
-    log.info(`Using profile: ${activeName} (${profiles[activeName].type})`);
-    return createTransport(activeName, profiles[activeName]);
-  }
-  const t = createDefaultTransport();
-  log.info(`Using default transport: ${t.type}`);
-  return t;
+    const config = readProfile(name);
+    if (config) {
+      const t = createTransport(name, config);
+      transportCache.set(name, t);
+      log.info(`Transport created: ${name} (${t.type})`);
+      return t;
+    }
+
+    if (name === 'default') {
+      const t = createDefaultTransport();
+      transportCache.set(name, t);
+      log.info(`Default transport: ${t.type}`);
+      return t;
+    }
+
+    throw new Error(`Profile '${name}' not found. Use terminal_profile_list to see available profiles.`);
+  };
 }
 
-function getProfileNames(): string[] {
-  const profiles: Record<string, ProfileConfig> =
-    vscode.workspace.getConfiguration('terminal-bridge').get('profiles') ?? {};
-  return Object.keys(profiles);
+function invalidateCache(name: string): void {
+  const t = transportCache.get(name);
+  if (t) { t.dispose(); transportCache.delete(name); }
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const log = vscode.window.createOutputChannel('Terminal Bridge', { log: true });
   context.subscriptions.push(log);
 
-  // Patch ext host to forward toolSpecificData through IPC
   const patcher = new ExtHostPatcher(log);
   const patched = await patcher.ensurePatch();
   if (patched) {
@@ -44,64 +55,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
   }
 
-  // Initialize transport
-  activeTransport = resolveTransport(log);
-  const getTransport = () => activeTransport;
+  ensureProfilesDir();
+  const resolve = makeResolver(log);
 
-  // Register tools
   const reg = (name: string, tool: vscode.LanguageModelTool<any>) =>
     context.subscriptions.push(vscode.lm.registerTool(name, tool));
 
-  reg('terminal_fg_run', new FgRunTool(log, getTransport));
-  reg('terminal_bg_launch', new BgLaunchTool(log, getTransport));
-  reg('terminal_bg_status', new BgStatusTool(log, getTransport));
-  reg('terminal_bg_get_output', new BgGetOutputTool(log, getTransport));
-  reg('terminal_bg_send_cmd', new BgSendCmdTool(log, getTransport));
-  reg('terminal_bg_exit', new BgExitTool(log, getTransport));
-  reg('terminal_bg_list_jobs', new BgListJobsTool(log, getTransport));
+  reg('terminal_fg_run', new FgRunTool(log, resolve));
+  reg('terminal_bg_launch', new BgLaunchTool(log, resolve));
+  reg('terminal_bg_status', new BgStatusTool(log, resolve));
+  reg('terminal_bg_get_output', new BgGetOutputTool(log, resolve));
+  reg('terminal_bg_send_cmd', new BgSendCmdTool(log, resolve));
+  reg('terminal_bg_exit', new BgExitTool(log, resolve));
+  reg('terminal_bg_list_jobs', new BgListJobsTool(log, resolve));
 
-  // Status bar — shows active profile
-  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.command = 'terminal-bridge.switchProfile';
-  statusBar.tooltip = 'Terminal Bridge: Switch Profile';
-  const updateStatusBar = () => {
-    statusBar.text = `$(terminal) ${activeTransport.name}`;
-  };
-  updateStatusBar();
-  statusBar.show();
-  context.subscriptions.push(statusBar);
+  reg('terminal_profile_list', new ProfileListTool());
+  reg('terminal_profile_get', new ProfileGetTool());
+  reg('terminal_profile_set', new ProfileSetTool(invalidateCache));
+  reg('terminal_profile_delete', new ProfileDeleteTool(invalidateCache));
 
-  // Switch profile command
-  context.subscriptions.push(vscode.commands.registerCommand('terminal-bridge.switchProfile', async () => {
-    const names = getProfileNames();
-    if (names.length === 0) {
-      vscode.window.showInformationMessage('No profiles configured. Add profiles in terminal-bridge.profiles setting.');
-      return;
-    }
-    const picked = await vscode.window.showQuickPick(names, { placeHolder: 'Select terminal profile' });
-    if (!picked) return;
-    const profiles: Record<string, ProfileConfig> =
-      vscode.workspace.getConfiguration('terminal-bridge').get('profiles') ?? {};
-    activeTransport.dispose();
-    activeTransport = createTransport(picked, profiles[picked]);
-    await vscode.workspace.getConfiguration('terminal-bridge').update('activeProfile', picked, vscode.ConfigurationTarget.Global);
-    updateStatusBar();
-    log.info(`Switched to profile: ${picked} (${activeTransport.type})`);
-  }));
-
-  // React to config changes
-  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-    if (e.affectsConfiguration('terminal-bridge.profiles') || e.affectsConfiguration('terminal-bridge.activeProfile')) {
-      activeTransport.dispose();
-      activeTransport = resolveTransport(log);
-      updateStatusBar();
-    }
-  }));
-
-  // Temporary harness test command — triggers our tool via #run reference
   context.subscriptions.push(vscode.commands.registerCommand('terminal-bridge.testChat', async () => {
     await vscode.commands.executeCommand('workbench.action.chat.newChat');
-    // Small delay to let new chat open
     await new Promise(r => setTimeout(r, 500));
     await vscode.commands.executeCommand('workbench.action.chat.open', {
       query: 'use #run to execute: echo LINE1 && sleep 3 && echo LINE2 && sleep 3 && echo LINE3',
@@ -109,8 +83,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
   }));
 
-  // Dispose transport on deactivation
-  context.subscriptions.push({ dispose: () => activeTransport.dispose() });
+  context.subscriptions.push({
+    dispose: () => transportCache.forEach(t => t.dispose()),
+  });
 
-  log.info(`Terminal Bridge activated — 7 tools registered, profile: ${activeTransport.name} (${activeTransport.type})`);
+  log.info('Terminal Bridge activated — 11 tools registered');
 }

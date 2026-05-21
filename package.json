@@ -2,7 +2,7 @@
   "name": "terminal-bridge",
   "displayName": "Terminal Bridge for Copilot Chat",
   "description": "Terminal tools for Copilot Chat \u2014 runs commands directly in WSL/Linux via child_process, no MCP dependency",
-  "version": "0.4.0",
+  "version": "0.4.4",
   "publisher": "terminal-bridge",
   "engines": {
     "vscode": "^1.100.0"
@@ -25,7 +25,7 @@
       {
         "name": "terminal_fg_run",
         "displayName": "Run Terminal Command",
-        "modelDescription": "Run a command synchronously in the terminal and return its combined stdout+stderr output and exit code. The command runs in WSL/Linux. Use this for any shell command execution.",
+        "modelDescription": "Run a command synchronously and return stdout+stderr and exit code. Specify profile to target a specific host (local, WSL, or SSH remote). Omit profile to use 'default'.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -35,7 +35,11 @@
             },
             "cwd": {
               "type": "string",
-              "description": "Working directory (absolute Linux/WSL path). Defaults to home directory."
+              "description": "Working directory (absolute path on target). Defaults to home directory."
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name for execution target. Omit for default. Use terminal_profile_list to see available profiles."
             }
           },
           "required": [
@@ -51,7 +55,7 @@
       {
         "name": "terminal_bg_launch",
         "displayName": "Launch Background Command",
-        "modelDescription": "Launch a background command via tmux. Returns immediately with a job_id. Use terminal_bg_status and terminal_bg_get_output to poll progress.",
+        "modelDescription": "Launch a background command via tmux. Returns immediately with a job_id. Use terminal_bg_status and terminal_bg_get_output to poll progress. Specify profile to target a specific host.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -61,11 +65,15 @@
             },
             "cwd": {
               "type": "string",
-              "description": "Working directory (absolute Linux/WSL path)"
+              "description": "Working directory (absolute path on target)"
             },
             "interactive": {
               "type": "boolean",
               "description": "If true, start a persistent tmux session for interactive use"
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name for execution target. Omit for default."
             }
           },
           "required": [
@@ -81,13 +89,17 @@
       {
         "name": "terminal_bg_status",
         "displayName": "Background Job Status",
-        "modelDescription": "Check the status of a background job: running, completed, failed, closed, or unknown.",
+        "modelDescription": "Check the status of a background job. Use the same profile that was used to launch the job.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "job_id": {
               "type": "string",
               "description": "The job ID returned by terminal_bg_launch"
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name (must match the profile used to launch the job)"
             }
           },
           "required": [
@@ -103,7 +115,7 @@
       {
         "name": "terminal_bg_get_output",
         "displayName": "Get Background Job Output",
-        "modelDescription": "Get the output log of a background job. tail=-1 returns all lines; tail=N returns last N lines.",
+        "modelDescription": "Get the output log of a background job. Use the same profile that was used to launch the job.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -114,6 +126,10 @@
             "tail": {
               "type": "integer",
               "description": "Number of lines to return from end. -1 for all. Default 20."
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name (must match the profile used to launch the job)"
             }
           },
           "required": [
@@ -129,7 +145,7 @@
       {
         "name": "terminal_bg_send_cmd",
         "displayName": "Send Command to Background Job",
-        "modelDescription": "Send a command to an interactive background job's tmux session.",
+        "modelDescription": "Send a command to an interactive background job's tmux session. Use the same profile that was used to launch the job.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -140,6 +156,10 @@
             "command": {
               "type": "string",
               "description": "The command to send"
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name (must match the profile used to launch the job)"
             }
           },
           "required": [
@@ -156,7 +176,7 @@
       {
         "name": "terminal_bg_exit",
         "displayName": "Terminate Background Job",
-        "modelDescription": "Terminate a background job. For interactive jobs, sends 'exit' and waits; for oneshot, kills the tmux session.",
+        "modelDescription": "Terminate a background job. Use the same profile that was used to launch the job.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -167,6 +187,10 @@
             "timeout": {
               "type": "integer",
               "description": "Seconds to wait for graceful exit. Default 60."
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name (must match the profile used to launch the job)"
             }
           },
           "required": [
@@ -182,7 +206,7 @@
       {
         "name": "terminal_bg_list_jobs",
         "displayName": "List Background Jobs",
-        "modelDescription": "List background jobs with optional filtering by status or age.",
+        "modelDescription": "List background jobs with optional filtering by status or age. Specify profile to list jobs on a specific host.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -193,6 +217,10 @@
             "age_secs": {
               "type": "integer",
               "description": "Only show jobs younger than this many seconds. -1 for all."
+            },
+            "profile": {
+              "type": "string",
+              "description": "Profile name for target host. Omit for default."
             }
           }
         },
@@ -201,45 +229,120 @@
         ],
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "list"
+      },
+      {
+        "name": "terminal_profile_list",
+        "displayName": "List Terminal Profiles",
+        "modelDescription": "List all configured terminal profiles with their types (local, wsl, ssh). Profiles are stored as JSON files in ~/.config/terminal-bridge/profiles/.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "profiles"
+      },
+      {
+        "name": "terminal_profile_get",
+        "displayName": "Get Terminal Profile",
+        "modelDescription": "Get the full configuration of a named terminal profile.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Profile name"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "profile-get"
+      },
+      {
+        "name": "terminal_profile_set",
+        "displayName": "Create/Update Terminal Profile",
+        "modelDescription": "Create or update a terminal profile. Types: 'local' (bash), 'wsl' (Windows WSL), 'ssh' (remote via SSH). SSH profiles use the host's ~/.ssh/config for connection details.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Profile name (alphanumeric, dash, underscore)"
+            },
+            "type": {
+              "type": "string",
+              "enum": ["local", "wsl", "ssh"],
+              "description": "Transport type"
+            },
+            "host": {
+              "type": "string",
+              "description": "SSH host or alias from ssh config"
+            },
+            "port": {
+              "type": "integer",
+              "description": "SSH port override"
+            },
+            "user": {
+              "type": "string",
+              "description": "SSH user override"
+            },
+            "identityFile": {
+              "type": "string",
+              "description": "SSH identity file path"
+            },
+            "distribution": {
+              "type": "string",
+              "description": "WSL distribution name"
+            }
+          },
+          "required": [
+            "name",
+            "type"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "profile-set"
+      },
+      {
+        "name": "terminal_profile_delete",
+        "displayName": "Delete Terminal Profile",
+        "modelDescription": "Delete a terminal profile by name.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Profile name to delete"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        },
+        "tags": [
+          "terminal"
+        ],
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "profile-del"
       }
     ],
     "commands": [
       {
-        "command": "terminal-bridge.switchProfile",
-        "title": "Terminal Bridge: Switch Profile"
-      },
-      {
         "command": "terminal-bridge.testChat",
         "title": "Terminal Bridge: Test Chat"
       }
-    ],
-    "configuration": {
-      "title": "Terminal Bridge",
-      "properties": {
-        "terminal-bridge.profiles": {
-          "type": "object",
-          "description": "Named terminal profiles. Each key is a profile name, value is { type, host?, port?, user?, identityFile?, distribution? }.",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "type": { "type": "string", "enum": ["local", "wsl", "ssh"], "description": "Transport type" },
-              "host": { "type": "string", "description": "SSH host or alias from ~/.ssh/config" },
-              "port": { "type": "integer", "description": "SSH port (default 22)" },
-              "user": { "type": "string", "description": "SSH user" },
-              "identityFile": { "type": "string", "description": "SSH identity file path" },
-              "distribution": { "type": "string", "description": "WSL distribution name" }
-            },
-            "required": ["type"]
-          },
-          "default": {}
-        },
-        "terminal-bridge.activeProfile": {
-          "type": "string",
-          "description": "Active profile name. Empty for auto-detect (WSL on Windows, local bash on Linux).",
-          "default": ""
-        }
-      }
-    }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",

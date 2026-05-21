@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'node:crypto';
 import { sq } from './exec';
-import { Transport } from './transport';
+import { TransportResolver } from './transport';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -28,27 +28,34 @@ function badId(id: string): vscode.LanguageModelToolResult | null {
 // bg_launch
 // ---------------------------------------------------------------------------
 
-interface LaunchInput { command: string; cwd?: string; interactive?: boolean }
+interface LaunchInput { command: string; cwd?: string; interactive?: boolean; profile?: string }
 
 export class BgLaunchTool implements vscode.LanguageModelTool<LaunchInput> {
-  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly resolve: TransportResolver) {}
 
   prepareInvocation(opts: vscode.LanguageModelToolInvocationPrepareOptions<LaunchInput>) {
+    const { command, profile } = opts.input;
     return {
-      invocationMessage: 'Launching background job…',
-      confirmationMessages: {
-        title: 'Launch background command?',
-        message: new vscode.MarkdownString(`\`\`\`\`\`bash\n${opts.input.command}\n\`\`\`\`\``),
+      invocationMessage: new vscode.MarkdownString(
+        profile ? `Launching \`${command}\` on **${profile}**` : `Launching \`${command}\``
+      ),
+      toolSpecificData: {
+        kind: 'terminal',
+        commandLine: { original: profile ? `[${profile}] ${command}` : command },
+        language: 'shellscript',
+        terminalCommandOutput: { text: '' },
       },
-    };
+    } as vscode.PreparedToolInvocation;
   }
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<LaunchInput>): Promise<vscode.LanguageModelToolResult> {
-    const { command, cwd, interactive = false } = opts.input;
+    const { command, cwd, interactive = false, profile } = opts.input;
+    let t;
+    try { t = this.resolve(profile); } catch (e: any) { return txt(`ok: false\nerror: ${e.message}`); }
     const id = genId();
     const d = jd(id);
     const mode = interactive ? 'interactive' : 'oneshot';
-    this.log.info(`bg_launch [${mode}]: ${command}`);
+    this.log.info(`bg_launch [${t.name}/${mode}]: ${command}`);
 
     // Setup metadata
     const setup = `set -e; mkdir -p ${d}
@@ -57,8 +64,7 @@ printf '%s' ${sq(cwd || '')} > ${d}/cwd
 date -Iseconds > ${d}/created_at
 printf '%s' ${sq(mode)} > ${d}/mode
 touch ${d}/running`;
-
-    const t = this.getTransport();
+    const start = Date.now();
     const { exitCode: rc } = await t.exec(setup);
     if (rc !== 0) return txt('ok: false\nerror: Failed to create job directory');
 
@@ -85,7 +91,13 @@ rm -f "$JD/running"`;
       await t.exec(`cat > ${d}/run.sh << 'BWEOF'\n${wrapper}\nBWEOF\ntmux new-session -d -s ${sq(id)} "bash ${d}/run.sh"`);
     }
 
-    return txt(`job_id: ${id}\nlog_path: ${d}/output.log\nmode: ${mode}`);
+    const resultText = `job_id: ${id}\nlog_path: ${d}/output.log\nmode: ${mode}\nprofile: ${t.name}`;
+    const result = txt(resultText);
+    (result as any).toolMetadata = {
+      terminalCommandOutput: { text: resultText.replace(/\n/g, '\r\n') },
+      terminalCommandState: { exitCode: 0, duration: Date.now() - start },
+    };
+    return result;
   }
 }
 
@@ -93,17 +105,19 @@ rm -f "$JD/running"`;
 // bg_status
 // ---------------------------------------------------------------------------
 
-interface StatusInput { job_id: string }
+interface StatusInput { job_id: string; profile?: string }
 
 export class BgStatusTool implements vscode.LanguageModelTool<StatusInput> {
-  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly resolve: TransportResolver) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<StatusInput>): Promise<vscode.LanguageModelToolResult> {
-    const { job_id } = opts.input;
+    const { job_id, profile } = opts.input;
     const err = badId(job_id); if (err) return err;
+    let t;
+    try { t = this.resolve(profile); } catch (e: any) { return txt(`ok: false\nerror: ${e.message}`); }
     const d = jd(job_id);
 
-    const { stdout } = await this.getTransport().exec(`
+    const { stdout } = await t.exec(`
 [ -d ${d} ] || { echo "NOT_FOUND"; exit; }
 MODE=$(cat ${d}/mode 2>/dev/null || echo oneshot)
 if [ -f ${d}/running ]; then echo "running"; exit; fi
@@ -124,18 +138,20 @@ echo "unknown"`);
 // bg_get_output
 // ---------------------------------------------------------------------------
 
-interface OutputInput { job_id: string; tail?: number }
+interface OutputInput { job_id: string; tail?: number; profile?: string }
 
 export class BgGetOutputTool implements vscode.LanguageModelTool<OutputInput> {
-  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly resolve: TransportResolver) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<OutputInput>): Promise<vscode.LanguageModelToolResult> {
-    const { job_id, tail = 20 } = opts.input;
+    const { job_id, tail = 20, profile } = opts.input;
     const err = badId(job_id); if (err) return err;
+    let t;
+    try { t = this.resolve(profile); } catch (e: any) { return txt(`ok: false\nerror: ${e.message}`); }
     const d = jd(job_id);
     const n = tail === -1 ? 10000 : Math.min(Math.max(0, tail), 10000);
 
-    const { stdout } = await this.getTransport().exec(
+    const { stdout } = await t.exec(
       `[ -d ${d} ] || { echo "__NF__"; exit; }; [ -f ${d}/output.log ] && tail -n ${n} ${d}/output.log || true`,
     );
     if (stdout.trim() === '__NF__') return txt(`ok: false\nerror: Job ${job_id} not found`);
@@ -149,10 +165,10 @@ export class BgGetOutputTool implements vscode.LanguageModelTool<OutputInput> {
 // bg_send_cmd
 // ---------------------------------------------------------------------------
 
-interface SendInput { job_id: string; command: string }
+interface SendInput { job_id: string; command: string; profile?: string }
 
 export class BgSendCmdTool implements vscode.LanguageModelTool<SendInput> {
-  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly resolve: TransportResolver) {}
 
   prepareInvocation(opts: vscode.LanguageModelToolInvocationPrepareOptions<SendInput>) {
     return {
@@ -165,11 +181,13 @@ export class BgSendCmdTool implements vscode.LanguageModelTool<SendInput> {
   }
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<SendInput>): Promise<vscode.LanguageModelToolResult> {
-    const { job_id, command } = opts.input;
+    const { job_id, command, profile } = opts.input;
     const err = badId(job_id); if (err) return err;
+    let t;
+    try { t = this.resolve(profile); } catch (e: any) { return txt(`ok: false\nerror: ${e.message}`); }
     const d = jd(job_id);
 
-    const { stdout } = await this.getTransport().exec(`
+    const { stdout } = await t.exec(`
 [ -d ${d} ] || { echo "not_found"; exit 1; }
 [ "$(cat ${d}/mode 2>/dev/null)" = "interactive" ] || { echo "not_interactive"; exit 1; }
 [ -f ${d}/running ] || { echo "not_running"; exit 1; }
@@ -190,17 +208,19 @@ tmux send-keys -l -t ${sq(job_id)} ${sq(command)} Enter && echo "ok"`);
 // bg_exit
 // ---------------------------------------------------------------------------
 
-interface ExitInput { job_id: string; timeout?: number }
+interface ExitInput { job_id: string; timeout?: number; profile?: string }
 
 export class BgExitTool implements vscode.LanguageModelTool<ExitInput> {
-  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly resolve: TransportResolver) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<ExitInput>): Promise<vscode.LanguageModelToolResult> {
-    const { job_id, timeout = 60 } = opts.input;
+    const { job_id, timeout = 60, profile } = opts.input;
     const err = badId(job_id); if (err) return err;
+    let t;
+    try { t = this.resolve(profile); } catch (e: any) { return txt(`ok: false\nerror: ${e.message}`); }
     const d = jd(job_id);
 
-    await this.getTransport().exec(`
+    await t.exec(`
 [ -d ${d} ] || exit 0
 MODE=$(cat ${d}/mode 2>/dev/null || echo oneshot)
 if [ "$MODE" = "interactive" ] && [ -f ${d}/running ]; then
@@ -218,15 +238,17 @@ rm -f ${d}/running`, (timeout + 10) * 1000);
 // bg_list_jobs
 // ---------------------------------------------------------------------------
 
-interface ListInput { status_filter?: string; age_secs?: number }
+interface ListInput { status_filter?: string; age_secs?: number; profile?: string }
 
 export class BgListJobsTool implements vscode.LanguageModelTool<ListInput> {
-  constructor(private readonly log: vscode.LogOutputChannel, private readonly getTransport: () => Transport) {}
+  constructor(private readonly log: vscode.LogOutputChannel, private readonly resolve: TransportResolver) {}
 
   async invoke(opts: vscode.LanguageModelToolInvocationOptions<ListInput>): Promise<vscode.LanguageModelToolResult> {
-    const { status_filter, age_secs = -1 } = opts.input;
+    const { status_filter, age_secs = -1, profile } = opts.input;
+    let t;
+    try { t = this.resolve(profile); } catch (e: any) { return txt(`ok: false\nerror: ${e.message}`); }
 
-    const { stdout } = await this.getTransport().exec(`
+    const { stdout } = await t.exec(`
 JD="${JOBS}"; [ -d "$JD" ] || { echo ""; exit; }
 NOW=$(date +%s)
 for d in "$JD"/bg_*; do [ -d "$d" ] || continue

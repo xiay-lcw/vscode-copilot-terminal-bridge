@@ -183,3 +183,5 @@ export function createTransport(name: string, config: ProfileConfig): Transport 
 export function createDefaultTransport(): Transport {
   return IS_WINDOWS ? new WslTransport('default') : new LocalTransport('default');
 }
+
+export type TransportResolver = (profile?: string) => Transport;
